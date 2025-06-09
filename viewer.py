@@ -499,30 +499,99 @@ Load your G-S data to unlock divine pixel enhancement!"""
                     
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to load depth map: {str(e)}")
-                
+
     def load_gs_alignment_data(self):
-        """Load G-S alignment data file."""
+        """Load S-NUIT alignment data from JSON file."""
         file_path = filedialog.askopenfilename(
-            title="Select G-S Alignment Data",
-            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+            title="Load S-NUIT Alignment JSON",
+            filetypes=[
+                ("JSON files", "*.json"),
+                ("All files", "*.*")
+            ]
         )
-        
-        if file_path:
-            try:
-                with open(file_path, 'r') as f:
-                    self.gs_alignment_data = json.load(f)
-                
-                print(f"Loaded G-S alignment data: {len(self.gs_alignment_data)} alignments")
-                
-                # Print sample alignment for verification
-                if self.gs_alignment_data:
-                    sample = self.gs_alignment_data[0]
-                    print(f"Sample alignment keys: {list(sample.keys())}")
-                
-                self.update_data_status()
-                
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to load alignment data: {str(e)}")
+
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                alignment_json = json.load(f)
+
+            # Extract alignment data
+            alignments = alignment_json.get('alignments', [])
+            metadata = alignment_json.get('metadata', {})
+            condition_summary = alignment_json.get('condition_summary', {})
+            statistics = alignment_json.get('statistics', {})
+
+            # Check if data is organized by G-S coordinates
+            if metadata.get('organized_by_gs_coordinates', False):
+                # Flatten organized data
+                flattened_alignments = []
+                for condition, group_alignments in alignments.items():
+                    flattened_alignments.extend(group_alignments)
+                alignments = flattened_alignments
+
+            # Validate required fields
+            if alignments:
+                required_fields = ['G_theta_deg', 'G_phi_deg', 'S_x', 'S_y']
+                sample = alignments[0]
+                missing_fields = [field for field in required_fields if field not in sample]
+                if missing_fields:
+                    raise ValueError(f"Alignment data missing required fields: {missing_fields}")
+
+            # Store alignment data
+            self.gs_alignment_data = alignments
+            self.gs_alignment_metadata = {
+                'source': metadata.get('source_file', 'Unknown'),
+                'generated': metadata.get('generated', 'Unknown'),
+                'total_alignments': len(alignments),
+                'total_conditions': metadata.get('total_conditions', 0),
+                'condition_summary': condition_summary,
+                'statistics': statistics
+            }
+
+            # Update UI
+            alignment_count = len(alignments)
+            condition_count = len(condition_summary)
+
+            self.process_status_label.config(
+                text=f"✅ Loaded {alignment_count:,} S-NUIT alignments ({condition_count} conditions)",
+                foreground="green"
+            )
+
+            # Enable coordinate map generation
+            if self.texture_image is not None and self.depth_map is not None:
+                self.generate_gs_coords_button.config(state="normal")
+
+            # Update data status
+            self.update_data_status()
+
+            # Update statistics
+            self.update_statistics()
+
+            print(f"🔮 Loaded S-NUIT alignment data:")
+            print(f"   Alignments: {alignment_count:,}")
+            print(f"   Conditions: {condition_count}")
+            print(f"   Source: {metadata.get('source_file', 'Unknown')}")
+            print(f"   Generated: {metadata.get('generated', 'Unknown')}")
+
+            if statistics:
+                print(f"   G_theta range: {statistics.get('g_theta_range', 'N/A')}")
+                print(f"   G_phi range: {statistics.get('g_phi_range', 'N/A')}")
+                print(f"   S_x range: {statistics.get('s_x_range', 'N/A')}")
+                print(f"   S_y range: {statistics.get('s_y_range', 'N/A')}")
+
+            messagebox.showinfo(
+                "Alignment Data Loaded",
+                f"Successfully loaded {alignment_count:,} S-NUIT alignments\n"
+                f"Conditions analyzed: {condition_count}\n"
+                f"Source: {metadata.get('source_file', 'Unknown')}\n"
+                f"Generated: {metadata.get('generated', 'Unknown')}"
+            )
+
+        except Exception as e:
+            messagebox.showerror("Load Error", f"Failed to load alignment JSON: {str(e)}")
+            print(f"Error loading alignment JSON: {e}")
                 
     def load_all_auto(self):
         """Auto-detect and load G-S data files from directory."""
@@ -664,51 +733,63 @@ Load your G-S data to unlock divine pixel enhancement!"""
             messagebox.showerror("Error", f"Failed to generate G-S coordinate maps: {str(e)}")
         finally:
             self.progress_var.set(100)
-            
-    def interpolate_from_alignment_data(self, height, width):
-        """Interpolate G-S coordinates using alignment data as ground truth."""
-        if not self.gs_alignment_data:
-            return self.derive_gs_coordinates_from_depth(height, width)
-        
-        # Extract coordinate data from alignments
-        s_x_points = [a['S_x'] for a in self.gs_alignment_data]
-        s_y_points = [a['S_y'] for a in self.gs_alignment_data]
-        g_theta_points = [a['G_theta'] for a in self.gs_alignment_data]
-        g_phi_points = [a['G_phi'] for a in self.gs_alignment_data]
-        
-        # Create grid coordinates
-        y_grid, x_grid = np.mgrid[0:height, 0:width]
-        
-        # Normalize grid coordinates to match S-coordinate space
-        s_x_min, s_x_max = min(s_x_points), max(s_x_points)
-        s_y_min, s_y_max = min(s_y_points), max(s_y_points)
-        
-        if s_x_max > s_x_min and s_y_max > s_y_min:
-            x_normalized = (x_grid / width) * (s_x_max - s_x_min) + s_x_min
-            y_normalized = (y_grid / height) * (s_y_max - s_y_min) + s_y_min
-        else:
-            x_normalized = x_grid
-            y_normalized = y_grid
-        
-        # Create point arrays for interpolation
-        alignment_points = np.column_stack([s_x_points, s_y_points])
-        grid_points = np.column_stack([x_normalized.ravel(), y_normalized.ravel()])
-        
-        # Interpolate G-S coordinates
-        try:
-            g_theta_interp = griddata(alignment_points, g_theta_points, grid_points, 
-                                    method='linear', fill_value=0).reshape((height, width))
-            g_phi_interp = griddata(alignment_points, g_phi_points, grid_points, 
-                                  method='linear', fill_value=0).reshape((height, width))
-        except:
-            # Fallback to nearest neighbor if linear fails
-            g_theta_interp = griddata(alignment_points, g_theta_points, grid_points, 
-                                    method='nearest', fill_value=0).reshape((height, width))
-            g_phi_interp = griddata(alignment_points, g_phi_points, grid_points, 
-                                  method='nearest', fill_value=0).reshape((height, width))
-        
-        return g_theta_interp, g_phi_interp, x_normalized, y_normalized
-        
+
+    def load_gs_alignment_data(self):
+        """Load G-S alignment data file with proper JSON structure handling."""
+        file_path = filedialog.askopenfilename(
+            title="Select G-S Alignment Data",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+        )
+
+        if file_path:
+            try:
+                with open(file_path, 'r') as f:
+                    alignment_json = json.load(f)
+
+                # Handle the converted JSON structure
+                if 'alignments' in alignment_json:
+                    # This is the new JSON format from the converter
+                    alignments = alignment_json['alignments']
+                    metadata = alignment_json.get('metadata', {})
+
+                    # Check if data is organized by G-S coordinates
+                    if metadata.get('organized_by_gs_coordinates', False):
+                        # Flatten organized data
+                        flattened_alignments = []
+                        for condition, group_alignments in alignments.items():
+                            flattened_alignments.extend(group_alignments)
+                        self.gs_alignment_data = flattened_alignments
+                    else:
+                        self.gs_alignment_data = alignments
+
+                    # Store metadata
+                    self.gs_alignment_metadata = metadata
+
+                    print(f"Loaded G-S alignment data: {len(self.gs_alignment_data)} alignments")
+                    print(f"Metadata: {metadata.get('source_file', 'Unknown source')}")
+
+                    # Print sample alignment for verification
+                    if self.gs_alignment_data:
+                        sample = self.gs_alignment_data[0]
+                        print(f"Sample alignment keys: {list(sample.keys())}")
+
+                        # Verify required fields exist
+                        required_fields = ['G_theta_deg', 'G_phi_deg', 'S_x', 'S_y']
+                        missing_fields = [field for field in required_fields if field not in sample]
+                        if missing_fields:
+                            print(f"Warning: Missing required fields: {missing_fields}")
+
+                else:
+                    # This is the old format (direct list of alignments)
+                    self.gs_alignment_data = alignment_json
+                    print(f"Loaded G-S alignment data (old format): {len(self.gs_alignment_data)} alignments")
+
+                self.update_data_status()
+
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to load alignment data: {str(e)}")
+                print(f"Error details: {str(e)}")
+
     def derive_gs_coordinates_from_depth(self, height, width):
         """Derive G-S coordinates from depth map geometry."""
         # Create coordinate grids
@@ -854,36 +935,58 @@ Load your G-S data to unlock divine pixel enhancement!"""
         enhanced_depth = np.sqrt(radius_sq - s_magnitude_sq)
         
         return enhanced_depth
-        
+
     def gs_hadit_interpolation(self, g_theta, g_phi, s_x, s_y, x_hr, y_hr):
         """Enhanced interpolation using Hadit vector relationships."""
         if not self.gs_alignment_data:
             return self.gs_geometric_interpolation(g_theta, g_phi, s_x, s_y, x_hr, y_hr)
-        
-        # Extract Hadit information from alignment data
-        hadit_thetas = [a['Hadit_theta'] for a in self.gs_alignment_data]
-        hadit_phis = [a['Hadit_phi'] for a in self.gs_alignment_data]
-        
-        # Use average Hadit vector for enhancement
-        avg_hadit_theta = np.mean(hadit_thetas) * np.pi / 180.0
-        avg_hadit_phi = np.mean(hadit_phis) * np.pi / 180.0
-        
-        # Calculate Hadit 3D vector
-        hadit_x = np.sin(avg_hadit_phi) * np.cos(avg_hadit_theta)
-        hadit_y = np.sin(avg_hadit_phi) * np.sin(avg_hadit_theta)
-        hadit_z = np.cos(avg_hadit_phi)
-        
-        # Use Hadit vector to modify interpolation
-        enhanced_depth = self.gs_geometric_interpolation(g_theta, g_phi, s_x, s_y, x_hr, y_hr)
-        
-        # Apply Hadit-based modulation
-        y_hr_norm = (y_hr - y_hr.mean()) / (y_hr.std() + 1e-6)
-        x_hr_norm = (x_hr - x_hr.mean()) / (x_hr.std() + 1e-6)
-        
-        hadit_modulation = (hadit_x * x_hr_norm + hadit_y * y_hr_norm) * 0.1
-        enhanced_depth = enhanced_depth + hadit_modulation
-        
-        return np.clip(enhanced_depth, 0, 1)
+
+        try:
+            # Extract Hadit information from alignment data
+            hadit_thetas = []
+            hadit_phis = []
+
+            for alignment in self.gs_alignment_data:
+                # Handle both possible field name formats
+                hadit_theta = alignment.get('Hadit_theta_deg',
+                                            alignment.get('Hadit_theta', alignment.get('hadit_theta', None)))
+                hadit_phi = alignment.get('Hadit_phi_deg', alignment.get('Hadit_phi', alignment.get('hadit_phi', None)))
+
+                if hadit_theta is not None and hadit_phi is not None:
+                    hadit_thetas.append(float(hadit_theta))
+                    hadit_phis.append(float(hadit_phi))
+
+            if len(hadit_thetas) == 0:
+                print("No Hadit data found, falling back to geometric interpolation")
+                return self.gs_geometric_interpolation(g_theta, g_phi, s_x, s_y, x_hr, y_hr)
+
+            # Use average Hadit vector for enhancement
+            avg_hadit_theta = np.mean(hadit_thetas) * np.pi / 180.0
+            avg_hadit_phi = np.mean(hadit_phis) * np.pi / 180.0
+
+            print(f"Using Hadit enhancement with {len(hadit_thetas)} Hadit vectors")
+            print(f"Average Hadit: theta={np.mean(hadit_thetas):.1f}°, phi={np.mean(hadit_phis):.1f}°")
+
+            # Calculate Hadit 3D vector
+            hadit_x = np.sin(avg_hadit_phi) * np.cos(avg_hadit_theta)
+            hadit_y = np.sin(avg_hadit_phi) * np.sin(avg_hadit_theta)
+            hadit_z = np.cos(avg_hadit_phi)
+
+            # Use Hadit vector to modify interpolation
+            enhanced_depth = self.gs_geometric_interpolation(g_theta, g_phi, s_x, s_y, x_hr, y_hr)
+
+            # Apply Hadit-based modulation
+            y_hr_norm = (y_hr - y_hr.mean()) / (y_hr.std() + 1e-6)
+            x_hr_norm = (x_hr - x_hr.mean()) / (x_hr.std() + 1e-6)
+
+            hadit_modulation = (hadit_x * x_hr_norm + hadit_y * y_hr_norm) * 0.1
+            enhanced_depth = enhanced_depth + hadit_modulation
+
+            return np.clip(enhanced_depth, 0, 1)
+
+        except Exception as e:
+            print(f"Error in Hadit interpolation: {e}")
+            return self.gs_geometric_interpolation(g_theta, g_phi, s_x, s_y, x_hr, y_hr)
         
     def standard_interpolation(self, depth_map, x_hr, y_hr, method):
         """Standard interpolation methods as fallback."""
@@ -1015,7 +1118,10 @@ Load your G-S data to unlock divine pixel enhancement!"""
                 s_x, s_y, original_texture, holes_mask)
             
             if source_pixel is not None:
-                result[hole_y, hole_x] = source_pixel
+                if len(source_pixel.shape) == 1 and len(source_pixel) == 3:
+                    result[hole_y, hole_x, :] = source_pixel
+                else:
+                    result[hole_y, hole_x, :] = source_pixel.flatten()[:3]
                 divine_success += 1
         
         if self.debug_divine_process.get():
@@ -1125,8 +1231,8 @@ Load your G-S data to unlock divine pixel enhancement!"""
                         pixel_y, pixel_x = valid_coords[idx]
                         pixel_value = original_texture[pixel_y, pixel_x]
                         divined_pixel += pixel_value * weights[i]
-                    
-                    result[hole_y, hole_x] = divined_pixel.astype(np.uint8)
+
+                    result[hole_y, hole_x, :] = divined_pixel.astype(np.uint8)
                     divine_success += 1
                     
             except Exception as e:
@@ -1204,7 +1310,7 @@ Load your G-S data to unlock divine pixel enhancement!"""
             divined_pixel = np.average(valid_texture[closest_indices], 
                                      weights=combined_weights, axis=0)
             
-            result[hole_y, hole_x] = divined_pixel.astype(np.uint8)
+            result[hole_y, hole_x, :] = divined_pixel.astype(np.uint8)
             divine_success += 1
         
         if self.debug_divine_process.get():
@@ -1277,7 +1383,10 @@ Load your G-S data to unlock divine pixel enhancement!"""
                 (hole_y, hole_x), s_x, s_y, original_texture, self.gs_coordinate_map)
             
             if divined_pixel is not None:
-                result[hole_y, hole_x] = divined_pixel
+                if len(divined_pixel.shape) == 1 and len(divined_pixel) == 3:
+                    result[hole_y, hole_x, :] = divined_pixel
+                else:
+                    result[hole_y, hole_x, :] = divined_pixel.flatten()[:3]
                 divine_success += 1
         
         if self.debug_divine_process.get():
@@ -1376,7 +1485,7 @@ Load your G-S data to unlock divine pixel enhancement!"""
             similar_pixels = original_texture[similar_mask]
             synthesized_pixel = np.average(similar_pixels, weights=weights, axis=0)
             
-            return synthesized_pixel.astype(np.uint8)
+            return synthesized_pixel.astype(np.uint8).flatten()
         
         return None
 
@@ -1475,7 +1584,7 @@ Load your G-S data to unlock divine pixel enhancement!"""
                 for dy in range(y_min, y_max):
                     for dx in range(x_min, x_max):
                         if not np.all(result[dy, dx] == 0):
-                            result[hole_y, hole_x] = result[dy, dx]
+                            result[hole_y, hole_x, :] = result[dy, dx, :]
                             found = True
                             break
                     if found:
@@ -1486,7 +1595,7 @@ Load your G-S data to unlock divine pixel enhancement!"""
             
             # Ultimate fallback: use original texture
             if not found:
-                result[hole_y, hole_x] = original_texture[hole_y, hole_x]
+                result[hole_y, hole_x, :] = original_texture[hole_y, hole_x, :]
         
         return result
 
@@ -1855,8 +1964,8 @@ Load your G-S data to unlock divine pixel enhancement!"""
             else:
                 print("⚠️ Warning: No S-coordinate maps available for divine process")
                 # Fallback to simple hole filling
-                left_image[left_holes] = texture[left_holes]
-                right_image[right_holes] = texture[right_holes]
+                left_image[left_holes, :] = texture[left_holes, :]
+                right_image[right_holes, :] = texture[right_holes, :]
         
         return left_image, right_image
 
